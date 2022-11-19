@@ -34,8 +34,8 @@ void DrawContours(cv::Mat& source, std::vector<cv::Point> Contours, int Contours
 int main(int argc, char** argv[])
 {
 	CShapeMatchV2 SM;
-	cv::Mat templateImage = cv::imread("D://Code//ShapeMatch//data//qfnTemplateImage.bmp", cv::IMREAD_GRAYSCALE);
-	cv::Mat searchImage = cv::imread("D://Code//ShapeMatch//data//qfnSearchImage.bmp", cv::IMREAD_GRAYSCALE);
+	cv::Mat templateImage = cv::imread("F://Users//Admin//Desktop//git//ShapeMatch//data//1.bmp", cv::IMREAD_GRAYSCALE);
+	cv::Mat searchImage = cv::imread("F://Users//Admin//Desktop//git//ShapeMatch//data//e.bmp", cv::IMREAD_GRAYSCALE);
 	if (!searchImage.data || !templateImage.data)
 	{
 		std::cout << " 图片加载失败！\n";
@@ -58,12 +58,12 @@ int main(int argc, char** argv[])
 
 	// 设置模板模型参数
 	ShapeModelV2 ModelID;
-	ModelID.m_AngleStart = -10;									//起始角度
-	ModelID.m_AngleStop = 10;									//终止角度
+	ModelID.m_AngleStart = -180;								//起始角度
+	ModelID.m_AngleStop = 180;									//终止角度
 	ModelID.m_AngleStep = 1;									//角度步长
-	ModelID.m_Contrast = 160;									//高阈值
-	ModelID.m_MinContrast = 100;								//低阈值
-	ModelID.m_NumLevels = 7;									//金字塔级数
+	ModelID.m_Contrast = 60;									//高阈值
+	ModelID.m_MinContrast = 20;									//低阈值
+	ModelID.m_NumLevels = numoctaves;							//金字塔级数
 	ModelID.m_Granularity = 1;									//颗粒度
 	ModelID.m_ImageWidth = templateImage.cols;
 	ModelID.m_ImageHeight = templateImage.rows;
@@ -81,6 +81,7 @@ int main(int argc, char** argv[])
 	std::cout << "\n Search Model Program\n";
 	std::cout << " ------------------------------------\n";
 	std::cout << " 角度范围：" << ModelID.m_AngleStart << "°~ " << ModelID.m_AngleStop << "°\n";
+	std::cout << " 金字塔数：" << ModelID.m_NumLevels << "\n";
 
 	// 创建形状模板文件
 	clock_t start_time = clock();
@@ -92,9 +93,9 @@ int main(int argc, char** argv[])
 	std::cout << " Create Time = " << total_time * 1000 << "ms\n";
 
 	// 设置模板匹配参数
-	int		NumMatch = 1;			//匹配个数
+	int		NumMatch = 6;			//匹配个数
 	float	MinScore = 0.6f;		//最小评分
-	float	Greediness = 0.6f;		//贪婪度
+	float	Greediness = 0.7f;		//贪婪度
 
 	MatchResultV2* Result = (MatchResultV2*)malloc(NumMatch * sizeof(MatchResultV2));
 	memset(Result, 0, NumMatch * sizeof(MatchResultV2));

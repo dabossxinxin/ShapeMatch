@@ -1,6 +1,7 @@
 #include "ShapeMatchV2.h"
 
 #define	MAXTARGETNUM 64
+#define MAXPIXELERROR 16
 
 PriorityQueue<MatchResultV2> resultsPerDeg;
 PriorityQueue<MatchResultV2> totalResultsTemp;
@@ -459,21 +460,21 @@ bool CShapeMatchV2::build_model_list(
 	int DstHeight = tempLength;
 	int BufferSizeDst = DstWidth * DstHeight;
 
-	unsigned char* pDstImgData = (unsigned char*)malloc(BufferSizeDst * sizeof(unsigned char));
-	memset(pDstImgData, 0, BufferSizeDst * sizeof(unsigned char));
+	unsigned char* pDstImgData = (unsigned char*)malloc(BufferSizeSrc * sizeof(unsigned char));
+	memset(pDstImgData, 0, BufferSizeSrc * sizeof(unsigned char));
 
-	unsigned char* pMaskRotData = (unsigned char*)malloc(BufferSizeDst * sizeof(unsigned char));
-	memset(pMaskRotData, 0, BufferSizeDst * sizeof(unsigned char));
+	unsigned char* pMaskRotData = (unsigned char*)malloc(BufferSizeSrc * sizeof(unsigned char));
+	memset(pMaskRotData, 0, BufferSizeSrc * sizeof(unsigned char));
 
 	cv::Mat SrcImage = cv::Mat(Height, Width, CV_8UC1);
 	memcpy((unsigned char*)SrcImage.data, ImageData, BufferSizeSrc * sizeof(unsigned char));
-	cv::Mat DstImage = cv::Mat(DstHeight, DstWidth, CV_8UC1);
-	memcpy((unsigned char*)DstImage.data, pDstImgData, BufferSizeDst * sizeof(unsigned char));
+	cv::Mat DstImage = cv::Mat(Height, Width, CV_8UC1);
+	memcpy((unsigned char*)DstImage.data, pDstImgData, BufferSizeSrc * sizeof(unsigned char));
 
 	cv::Mat SrcMask = cv::Mat(Height, Width, CV_8UC1);
 	memcpy((unsigned char*)SrcMask.data, MaskData, BufferSizeSrc * sizeof(unsigned char));
-	cv::Mat DstMask = cv::Mat(DstHeight, DstWidth, CV_8UC1);
-	memcpy((unsigned char*)DstMask.data, pMaskRotData, BufferSizeDst * sizeof(unsigned char));
+	cv::Mat DstMask = cv::Mat(Height, Width, CV_8UC1);
+	memcpy((unsigned char*)DstMask.data, pMaskRotData, BufferSizeSrc * sizeof(unsigned char));
 
 	int AngleNum = ShapeInfoVec[0].AngleNum;
 	for (int i = 0; i < AngleNum; i++)
@@ -676,6 +677,9 @@ bool CShapeMatchV2::create_shape_model_impl(
 	unsigned char* pMaskDataPyr = (unsigned char*)malloc(BufferSize * sizeof(unsigned char));
 	memcpy(pMaskDataPyr, pMaskDataPyrAll + (in_size/denominator)*numerator, BufferSize * sizeof(unsigned char));
 
+	cv::Mat cvImageDataPyr = cv::Mat(HeightPyr, WidthPyr, CV_8UC1, pImageDataPyr);
+	cv::Mat cvMaskDataPyr = cv::Mat(HeightPyr, WidthPyr, CV_8UC1, pMaskDataPyr);
+
 	bool IsBuild = build_model_list(
 		ModelID.m_pShapeInfoPyr[PyrLevel],
 		pImageDataPyr,
@@ -786,6 +790,7 @@ void CShapeMatchV2::shape_match(
 	int16_t* pBufGradX = (int16_t*)malloc(bufferSize * sizeof(int16_t));
 	int16_t* pBufGradY = (int16_t*)malloc(bufferSize * sizeof(int16_t));
 	float* pBufMag = (float*)malloc(bufferSize * sizeof(float));
+	/*int16_t* pBufOrien = (int16_t*)malloc(bufferSize * sizeof(int16_t));*/
 
 	resultsPerDeg.clear();
 	totalResultsTemp.clear();
@@ -798,6 +803,7 @@ void CShapeMatchV2::shape_match(
 		memset(pBufGradX, 0, bufferSize * sizeof(int16_t));
 		memset(pBufGradY, 0, bufferSize * sizeof(int16_t));
 		memset(pBufMag, 0, bufferSize * sizeof(float));
+		/*memset(pBufOrien, -1, bufferSize * sizeof(int16_t));*/
 
 		int index = 0;
 		float MaxGrad = -9999.0;
@@ -810,12 +816,28 @@ void CShapeMatchV2::shape_match(
 				*(pBufGradX + index) = sdx;
 				*(pBufGradY + index) = sdy;
 				*(pBufMag + index) = new_rsqrt((float)(sdx*sdx) + (float)(sdy*sdy));
+
+				/*float direction = cv::fastAtan2(float(sdy), float(sdx));
+
+				if ((direction > 0 && direction < 22.5) || (direction > 157.5 && direction < 202.5) || (direction > 337.5 && direction < 360))
+					direction = 0;
+				else if ((direction > 22.5 && direction < 67.5) || (direction > 202.5 && direction < 247.5))
+					direction = 45;
+				else if ((direction > 67.5 && direction < 112.5) || (direction > 247.5 && direction < 292.5))
+					direction = 90;
+				else if ((direction > 112.5 && direction < 157.5) || (direction > 292.5 && direction < 337.5))
+					direction = 135;
+				else
+					direction = -1;
+
+				pBufOrien[index] = (int16_t)direction;*/
 			}
 		}
 
 		int curX = 0;
 		int curY = 0;
 
+		int16_t dir = 0;
 		int16_t iTx = 0;
 		int16_t iTy = 0;
 		int16_t iSx = 0;
@@ -831,13 +853,15 @@ void CShapeMatchV2::shape_match(
 		int AngleStop	= SearchRegion->AngleStop;
 		int AngleStart	= SearchRegion->AngleStart;
 
+		int	  PixelError   = 2;
+		int	  AngleMatchNum = 0;
 		int   SumOfCoords  = 0;
 		int   TempPiontX   = 0;
 		int   TempPiontY   = 0;
 		float PartialSum   = 0;
 		float PartialScore = 0;
 		float ResultScore  = 0;
-		float anMinScore = 1 - MinScore;
+		float anMinScore = MinScore - 1.0;
 		float NormMinScore   = 0;
 		float NormGreediness = Greediness;
 
@@ -856,26 +880,24 @@ void CShapeMatchV2::shape_match(
 			for(int i = startX; i < endX; ++i) {
 				for(int j = startY; j < endY; ++j) {
 					PartialSum = 0;
-
-					/*cv::Mat searchImageCv = cv::Mat(height, width, CV_8UC1, SearchImage);
-					cv::Mat searchImageRgbCv = cv::Mat(height, width, CV_8UC3);
-					cv::cvtColor(searchImageCv, searchImageRgbCv, cv::COLOR_GRAY2RGB);*/
-
+					AngleMatchNum = 0;
 					for(int num = 0; num < ShapeInfoVec[k].NoOfCordinates; ++num) {
 						curX = i + ShapeInfoVec[k].Coordinates[num].x;
 						curY = j + ShapeInfoVec[k].Coordinates[num].y;
 						iTx = ShapeInfoVec[k].EdgeDerivativeX[num];
 						iTy = ShapeInfoVec[k].EdgeDerivativeY[num];
 						iTm = ShapeInfoVec[k].EdgeMagnitude[num];
+						dir = ShapeInfoVec[k].EdgeDirection[num];
 
 						if (curX < 0 || curY < 0 || curX > width - 1 || curY > height - 1) continue;
-
-						/*cv::line(searchImageRgbCv, cv::Point(curX, curY), cv::Point(curX, curY), cv::Scalar(255, 0, 0), 1);*/
 
 						int offSet = curY * width + curX;
 						iSx = *(pBufGradX + offSet);
 						iSy = *(pBufGradY + offSet);
 						iSm = *(pBufMag + offSet);
+
+						/*if (dir != *(pBufOrien + offSet)) AngleMatchNum++;
+						if (AngleMatchNum > int(ShapeInfoVec[k].NoOfCordinates*0.1)) break;*/
 
 						if((iSx != 0 || iSy != 0) && (iTx != 0 || iTy != 0)) {
 							PartialSum = PartialSum + ((iSx * iTx) + (iSy * iTy)) * (iTm * iSm);
@@ -893,8 +915,8 @@ void CShapeMatchV2::shape_match(
 						auto resultPerDegTmp = resultsPerDeg.GetElement();
 						auto resultPerDegSize = resultsPerDeg.size();
 						for(int n = 1; n <= resultPerDegSize; ++n) {
-							if(std::abs((resultPerDegTmp)[n].CenterLocX - i) < 3 &&
-								std::abs((resultPerDegTmp)[n].CenterLocY - j) < 3) {
+							if(std::abs((resultPerDegTmp)[n].CenterLocX - i) < PixelError &&
+								std::abs((resultPerDegTmp)[n].CenterLocY - j) < PixelError) {
 								hasFlag = true;
 								if((resultPerDegTmp)[n].ResultScore < PartialScore) {
 									(resultPerDegTmp)[n].Angle = Angle;
@@ -937,8 +959,8 @@ void CShapeMatchV2::shape_match(
 		for(int i = 1; i <= totalResultsTemp.size(); i++) {
 			hasFlag = false;
 			for(int j = 0; j < resultsCounter; j++) {	
-				if(std::abs((ResultList + j)->CenterLocX - (totalResults)[i].CenterLocX) < 3 &&
-					std::abs((ResultList + j)->CenterLocY - (totalResults)[i].CenterLocY) < 3) {
+				if(std::abs((ResultList + j)->CenterLocX - (totalResults)[i].CenterLocX) < PixelError &&
+					std::abs((ResultList + j)->CenterLocY - (totalResults)[i].CenterLocY) < PixelError) {
 					hasFlag = true;
 					if((totalResults)[i].ResultScore > (ResultList + j)->ResultScore) {
 						(ResultList + j)->Angle			= (totalResults)[i].Angle;
@@ -986,6 +1008,7 @@ void CShapeMatchV2::shape_match_accurate(
 	int16_t* pBufGradX   = (int16_t *) malloc(bufferSize * sizeof(int16_t));
 	int16_t* pBufGradY   = (int16_t *) malloc(bufferSize * sizeof(int16_t));
 	float* pBufMag     = (float *) malloc(bufferSize * sizeof(float));
+	/*int16_t* pBufOrien = (int16_t*)malloc(bufferSize * sizeof(int16_t));*/
 
 	if( pInput && pBufGradX && pBufGradY && pBufMag ) {
 		//gaussian_filter(SearchImage, pInput, width, height);
@@ -993,6 +1016,7 @@ void CShapeMatchV2::shape_match_accurate(
 		memset(pBufGradX, 0, bufferSize * sizeof(int16_t));
 		memset(pBufGradY, 0, bufferSize * sizeof(int16_t));
 		memset(pBufMag, 0, bufferSize * sizeof(float));
+		/*memset(pBufOrien, -1, bufferSize * sizeof(int16_t));*/
 
 		for(int i = 1; i < width-1; ++i) {
 			for(int j = 1; j < height-1; ++j) {
@@ -1002,12 +1026,28 @@ void CShapeMatchV2::shape_match_accurate(
 				*(pBufGradX + index) = sdx;
 				*(pBufGradY + index) = sdy; 
 				*(pBufMag   + index) = new_rsqrt((float)(sdx*sdx) + (float)(sdy*sdy));
+
+				/*float direction = cv::fastAtan2(float(sdy), float(sdx));
+
+				if ((direction > 0 && direction < 22.5) || (direction > 157.5 && direction < 202.5) || (direction > 337.5 && direction < 360))
+					direction = 0;
+				else if ((direction > 22.5 && direction < 67.5) || (direction > 202.5 && direction < 247.5))
+					direction = 45;
+				else if ((direction > 67.5 && direction < 112.5) || (direction > 247.5 && direction < 292.5))
+					direction = 90;
+				else if ((direction > 112.5 && direction < 157.5) || (direction > 292.5 && direction < 337.5))
+					direction = 135;
+				else
+					direction = -1;
+
+				pBufOrien[index] = (int16_t)direction;*/
 			}
 		}
 
 		int curX = 0;
 		int curY = 0;
 
+		int16_t dir = 0;
 		int16_t iTx = 0;
 		int16_t iTy = 0;
 		int16_t iSx = 0;
@@ -1023,6 +1063,8 @@ void CShapeMatchV2::shape_match_accurate(
 		int AngleStart	= SearchRegion->AngleStart;
 		int AngleStop	= SearchRegion->AngleStop;
 
+		int	  PixelError    = 2;
+		int	  AngleMatchNum = 0;
 		int	  ImageIndex	= 0;
 		int   SumOfCoords	= 0;
 		int   TempPointX	= 0;
@@ -1031,7 +1073,7 @@ void CShapeMatchV2::shape_match_accurate(
 		float PartialScore	= 0;
 		float ResultScore	= 0;
 		float TempScore		= 0;
-		float anMinScore = 1 - MinScore;
+		float anMinScore = MinScore - 1.0;
 		float NormMinScore	= 0;
 		float NormGreediness= Greediness;
 
@@ -1044,6 +1086,7 @@ void CShapeMatchV2::shape_match_accurate(
 			for(int i = startX; i < endX; ++i) {
 				for(int j = startY; j < endY; ++j) {
 					PartialSum = 0;
+					AngleMatchNum = 0;
 					for(int m = 0; m < ShapeInfoVec[k].NoOfCordinates; ++m) {
 						curX = i + ShapeInfoVec[k].Coordinates[m].x ;
 						curY = j + ShapeInfoVec[k].Coordinates[m].y ;
@@ -1057,6 +1100,9 @@ void CShapeMatchV2::shape_match_accurate(
 						iSx = *(pBufGradX + ImageIndex);
 						iSy = *(pBufGradY + ImageIndex);
 						iSm = *(pBufMag   + ImageIndex);
+
+						/*if (dir != *(pBufOrien + ImageIndex)) AngleMatchNum++;
+						if (AngleMatchNum > int(ShapeInfoVec[k].NoOfCordinates*0.1)) break;*/
 
 						if((iSx != 0 || iSy != 0) && (iTx != 0 || iTy != 0)) {
 							PartialSum = PartialSum + ((iSx * iTx) + (iSy * iTy)) * (iTm * iSm);
