@@ -13,9 +13,9 @@
 #include <math.h>
 #include <time.h>
 
-#define		MAX_NUM_INSTANCES		300				//最大目标个数
-#define		MIN_NUM_LEVELS			0				//最小金字塔级数
-#define		MAX_NUM_LEVELS			5				//最大金字塔级数
+//#define SAVE_IMG
+#define	MAXTARGETNUM 64
+#define SCORE_RATIO 0.9
 
 const int K_CosineTable[24] =
 {
@@ -43,10 +43,7 @@ struct ShapeInfoV2
 {
 	cv::Point					ReferPoint;					//模板重心坐标
 	std::vector<cv::Point>		Coordinates;				//模板坐标数组
-	std::vector<float>			EdgeMagnitude;				//梯度导数
-	std::vector<int16_t>		EdgeDerivativeX;			//X方向梯度
-	std::vector<int16_t>		EdgeDerivativeY;			//Y方向梯度
-	std::vector<int32_t>		EdgeDirection;				//梯度方向
+	std::vector<cv::Point2f>	EdgeDirection;				//梯度方向
 	int 						ImgWidth;					//图像宽度
 	int							ImgHeight;					//图像高度
 	int							NoOfCordinates;				//轮廓点个数
@@ -58,9 +55,6 @@ struct ShapeInfoV2
 		ImgHeight(0),ImgWidth(0),ReferPoint(cv::Point(0,0))
 	{
 		Coordinates.clear();
-		EdgeDerivativeX.clear();
-		EdgeDerivativeY.clear();
-		EdgeMagnitude.clear();
 		EdgeDirection.clear();
 	}
 };
@@ -277,9 +271,16 @@ private:
 		unsigned char* OutImgData
 	);
 
-	void CShapeMatchV2::release_shape_model_impl(
+	void release_shape_model_impl(
 		ShapeModelV2& ModelID,
 		const int PyrLevel
+	);
+
+	void download_pyr_img(
+		const std::string& filename,
+		const int imgWidth,
+		const int imgHeight,
+		unsigned char* imgData
 	);
 };
 

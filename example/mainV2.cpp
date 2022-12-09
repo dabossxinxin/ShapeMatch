@@ -35,7 +35,7 @@ int main(int argc, char** argv[])
 {
 	CShapeMatchV2 SM;
 	cv::Mat templateImage = cv::imread("F://Users//Admin//Desktop//git//ShapeMatch//data//1.bmp", cv::IMREAD_GRAYSCALE);
-	cv::Mat searchImage = cv::imread("F://Users//Admin//Desktop//git//ShapeMatch//data//e.bmp", cv::IMREAD_GRAYSCALE);
+	cv::Mat searchImage = cv::imread("F://Users//Admin//Desktop//git//ShapeMatch//data//b.bmp", cv::IMREAD_GRAYSCALE);
 	if (!searchImage.data || !templateImage.data)
 	{
 		std::cout << " 图片加载失败！\n";
@@ -61,9 +61,9 @@ int main(int argc, char** argv[])
 	ModelID.m_AngleStart = -180;								//起始角度
 	ModelID.m_AngleStop = 180;									//终止角度
 	ModelID.m_AngleStep = 1;									//角度步长
-	ModelID.m_Contrast = 60;									//高阈值
-	ModelID.m_MinContrast = 20;									//低阈值
-	ModelID.m_NumLevels = numoctaves;							//金字塔级数
+	ModelID.m_Contrast = 150;									//高阈值
+	ModelID.m_MinContrast = 80;									//低阈值
+	ModelID.m_NumLevels = 5;									//金字塔级数
 	ModelID.m_Granularity = 1;									//颗粒度
 	ModelID.m_ImageWidth = templateImage.cols;
 	ModelID.m_ImageHeight = templateImage.rows;
@@ -81,7 +81,6 @@ int main(int argc, char** argv[])
 	std::cout << "\n Search Model Program\n";
 	std::cout << " ------------------------------------\n";
 	std::cout << " 角度范围：" << ModelID.m_AngleStart << "°~ " << ModelID.m_AngleStop << "°\n";
-	std::cout << " 金字塔数：" << ModelID.m_NumLevels << "\n";
 
 	// 创建形状模板文件
 	clock_t start_time = clock();
@@ -93,14 +92,14 @@ int main(int argc, char** argv[])
 	std::cout << " Create Time = " << total_time * 1000 << "ms\n";
 
 	// 设置模板匹配参数
-	int		NumMatch = 6;			//匹配个数
+	int		NumMatch = 3;			//匹配个数
 	float	MinScore = 0.6f;		//最小评分
-	float	Greediness = 0.7f;		//贪婪度
+	float	Greediness = 0.9f;		//贪婪度
 
-	MatchResultV2* Result = (MatchResultV2*)malloc(NumMatch * sizeof(MatchResultV2));
-	memset(Result, 0, NumMatch * sizeof(MatchResultV2));
+	MatchResultV2 Result[10];
+	memset(Result, 0, 10 * sizeof(MatchResultV2));
 
-	for (int it = 0; it < 1; ++it) {
+	for (int it = 0; it < 20; ++it) {
 		std::cout << " ------------------------------------\n";
 		if (IsInial)
 		{
@@ -135,8 +134,7 @@ int main(int argc, char** argv[])
 		}
 	}
 	SM.release_shape_model(ModelID);
-	if (Result) std::free(Result);
-	
+
 	//Display result
 	cv::namedWindow("Search Image", cv::WINDOW_FREERATIO);
 	cv::imshow("Search Image", searchImageRGB);

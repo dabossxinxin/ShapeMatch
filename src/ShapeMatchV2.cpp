@@ -1,8 +1,5 @@
 #include "ShapeMatchV2.h"
 
-#define	MAXTARGETNUM 64
-#define MAXPIXELERROR 16
-
 PriorityQueue<MatchResultV2> resultsPerDeg;
 PriorityQueue<MatchResultV2> totalResultsTemp;
 
@@ -132,7 +129,10 @@ void CShapeMatchV2::image_pyramid_impl(
 	for (int row = 0; row < h; ++row) {
 		for (int col = 0; col < w; ++col) {
 			*(OutImgData + offset + row * w + col) =
-				*(SrcImgData + factor * row*srcWidth + factor * col);
+				0.25*(*(SrcImgData + factor * row*srcWidth + factor * col) +
+					*(SrcImgData + factor * row*srcWidth + factor * col + 1) +
+					*(SrcImgData + (factor * row + 1)*srcWidth + factor * col) +
+					*(SrcImgData + (factor * row + 1)*srcWidth + factor * col + 1));
 		}
 	}
 }
@@ -252,6 +252,15 @@ void CShapeMatchV2::release_shape_model_impl(
 	pInfoPyr = nullptr;
 }
 
+void CShapeMatchV2::download_pyr_img(
+	const std::string& filename,
+	const int imgWidth,
+	const int imgHeight,
+	unsigned char* imgData)
+{
+	cv::imwrite(filename, cv::Mat(imgHeight, imgWidth, CV_8UC1, imgData));
+}
+
 bool CShapeMatchV2::release_shape_model(
 	ShapeModelV2& ModelID)
 {
@@ -280,24 +289,24 @@ void CShapeMatchV2::extract_shape_info(
 	uint32_t bufferSize  = width * height;
 
 	unsigned char* pInput = (unsigned char*)malloc(bufferSize * sizeof(unsigned char));
-	unsigned char* pBufOut = (unsigned char*)malloc(bufferSize * sizeof(unsigned char));
 	int16_t	*pBufGradX = (int16_t *)malloc(bufferSize * sizeof(int16_t));
 	int16_t	*pBufGradY = (int16_t *)malloc(bufferSize * sizeof(int16_t));
 	int32_t	*pBufOrien = (int32_t *)malloc(bufferSize * sizeof(int32_t));
 	float	*pBufMag = (float *)malloc(bufferSize * sizeof(float));
+	cv::Point2f *pBufDir = (cv::Point2f*)malloc(bufferSize * sizeof(cv::Point2f));
 
-	if(pInput && pBufGradX && pBufGradY && pBufMag && pBufOrien && pBufOut) {
+	if(pInput && pBufGradX && pBufGradY && pBufMag && pBufOrien) {
 		//gaussian_filter(ImageData, pInput, width, height);
 		memcpy(pInput, ImageData, bufferSize * sizeof(uint8_t));
 		memset(pBufGradX,  0, bufferSize * sizeof(int16_t));
 		memset(pBufGradY,  0, bufferSize * sizeof(int16_t));
 		memset(pBufOrien,  -1, bufferSize * sizeof(int32_t));
-		memset(pBufOut,    0, bufferSize * sizeof(uint8_t));
 		memset(pBufMag,    0, bufferSize * sizeof(float));
+		memset(pBufDir, 0, bufferSize * sizeof(cv::Point2f));
 
 		int index = 0;
-		float MaxGradient = -9999.99f;
 
+		// 1、计算图像Sobel梯度
 		for(int i = 1; i < width - 1; ++i) {
 			for(int j = 1; j < height - 1; ++j) { 	
 				index = j * width + i;
@@ -325,12 +334,12 @@ void CShapeMatchV2::extract_shape_info(
 					direction = -1;
 
 				pBufOrien[index] = (int32_t)direction;
-				if (MagG > MaxGradient) MaxGradient = MagG;
 			}
 		}
 
-		float factor = 255.0 / MaxGradient;
-		float leftPixel = 0., rightPixel = 0.;
+		// 2、非极大值抑制
+		float leftPixel = 0.;
+		float rightPixel = 0.;
 		for(int i = 1; i < width - 1; ++i) {
 			for(int j = 1; j < height - 1; ++j) {
 				index = j * width + i;
@@ -363,41 +372,39 @@ void CShapeMatchV2::extract_shape_info(
 				if ((*(pBufMag + index) < leftPixel) ||
 					(*(pBufMag + index) < rightPixel) || 
 					(*(MaskImgData + index) == 0x00)){
-					*(pBufOut + index) = 0;
-				}
-				else {
-					*(pBufOut + index) = (unsigned char)(*(pBufMag + index)*factor);
+					*(pBufMag + index) = 0.0;
 				}
 			}
 		}
 
-		int reserveFlag = 1, edgePointsCount = 0;
+		// 3、根据所设定阈值调整
+		int reserveFlag = 1;
+		int edgePointsCount = 0;
 		for(int i = 1; i < width-1; i+= PointReduction) {
 			for(int j = 1; j < height-1; j+= PointReduction) {
 				index = j * width + i;
 				int16_t fdx = *(pBufGradX + index);
 				int16_t fdy = *(pBufGradY + index);
-				int32_t dir = *(pBufOrien + index);
 				float MagG = *(pBufMag + index);
 
 				reserveFlag = 1;
-				if((float)*(pBufOut + index) < Contrast) {
-					if((float)*(pBufOut + index) < MinContrast) {
-						*(pBufOut + index) = 0;
+				if((float)*(pBufMag + index) < Contrast) {
+					if((float)*(pBufMag + index) < MinContrast) {
+						*(pBufMag + index) = 0;
 						reserveFlag = 0;
 					}
 					else
 					{
-						if (((float)*(pBufOut + index - width - 1) < Contrast) &&
-							((float)*(pBufOut + index - width) < Contrast) &&
-							((float)*(pBufOut + index - width + 1) < Contrast) &&
-							((float)*(pBufOut + index - 1) < Contrast) &&
-							((float)*(pBufOut + index + 1) < Contrast) &&
-							((float)*(pBufOut + index + width - 1) < Contrast) &&
-							((float)*(pBufOut + index + width) < Contrast) &&
-							((float)*(pBufOut + index + width + 1) < Contrast))
+						if (((float)*(pBufMag + index - width - 1) < Contrast) &&
+							((float)*(pBufMag + index - width) < Contrast) &&
+							((float)*(pBufMag + index - width + 1) < Contrast) &&
+							((float)*(pBufMag + index - 1) < Contrast) &&
+							((float)*(pBufMag + index + 1) < Contrast) &&
+							((float)*(pBufMag + index + width - 1) < Contrast) &&
+							((float)*(pBufMag + index + width) < Contrast) &&
+							((float)*(pBufMag + index + width + 1) < Contrast))
 						{
-							*(pBufOut + index) = 0;
+							*(pBufMag + index) = 0;
 							reserveFlag = 0;
 						}
 					}
@@ -405,16 +412,11 @@ void CShapeMatchV2::extract_shape_info(
 
 				if(reserveFlag != 0) {
 					if(fdx != 0 || fdy != 0) {		
+						MagG = 1.0 / MagG;
+						cv::Point2f dir = cv::Point2f(fdx*MagG, fdy*MagG);
 						cv::Point pos(i - int(width*0.5), j - int(height*0.5));
 						ShapeInfoData->Coordinates.push_back(pos);
-						ShapeInfoData->EdgeDerivativeX.push_back(fdx);
-						ShapeInfoData->EdgeDerivativeY.push_back(fdy);
-						ShapeInfoData->EdgeDirection.push_back(dir);
-
-						if (MagG != 0)
-							ShapeInfoData->EdgeMagnitude.push_back(1 / MagG);
-						else
-							ShapeInfoData->EdgeMagnitude.push_back(0);
+						ShapeInfoData->EdgeDirection.push_back(dir);  
 					}
 				}
 			}
@@ -438,7 +440,6 @@ void CShapeMatchV2::extract_shape_info(
 	if(pBufOrien) std::free(pBufOrien); 
 	if(pBufGradY) std::free(pBufGradY);
 	if(pBufGradX) std::free(pBufGradX);
-	if(pBufOut) std::free(pBufOut);
 	if(pInput) std::free(pInput);
 }
 
@@ -460,11 +461,11 @@ bool CShapeMatchV2::build_model_list(
 	int DstHeight = tempLength;
 	int BufferSizeDst = DstWidth * DstHeight;
 
-	unsigned char* pDstImgData = (unsigned char*)malloc(BufferSizeSrc * sizeof(unsigned char));
-	memset(pDstImgData, 0, BufferSizeSrc * sizeof(unsigned char));
+	unsigned char* pDstImgData = (unsigned char*)malloc(BufferSizeDst * sizeof(unsigned char));
+	memset(pDstImgData, 0, BufferSizeDst * sizeof(unsigned char));
 
-	unsigned char* pMaskRotData = (unsigned char*)malloc(BufferSizeSrc * sizeof(unsigned char));
-	memset(pMaskRotData, 0, BufferSizeSrc * sizeof(unsigned char));
+	unsigned char* pMaskRotData = (unsigned char*)malloc(BufferSizeDst * sizeof(unsigned char));
+	memset(pMaskRotData, 0, BufferSizeDst * sizeof(unsigned char));
 
 	cv::Mat SrcImage = cv::Mat(Height, Width, CV_8UC1);
 	memcpy((unsigned char*)SrcImage.data, ImageData, BufferSizeSrc * sizeof(unsigned char));
@@ -521,23 +522,20 @@ void CShapeMatchV2::train_shape_model(
 	uint32_t  bufferSize = width * height;
 
 	unsigned char* pInput = (unsigned char *)malloc(bufferSize * sizeof(unsigned char));
-	unsigned char* pBufOut = (unsigned char *)malloc(bufferSize * sizeof(unsigned char));
 	int16_t* pBufGradX = (int16_t *)malloc(bufferSize * sizeof(int16_t));
 	int16_t* pBufGradY = (int16_t *)malloc(bufferSize * sizeof(int16_t));
 	int32_t* pBufOrien = (int32_t *)malloc(bufferSize * sizeof(int32_t));
 	float* pBufMag = (float *)malloc(bufferSize * sizeof(float));
 
-	if( pInput && pBufGradX && pBufGradY && pBufMag && pBufOrien && pBufOut) {
+	if( pInput && pBufGradX && pBufGradY && pBufMag && pBufOrien) {
 		//gaussian_filter((unsigned char*)Image.data, pInput, width, height);
 		memcpy(pInput, Image.data, sizeof(unsigned char)*bufferSize);
 		memset(pBufGradX, 0, bufferSize * sizeof(int16_t));
 		memset(pBufGradY, 0, bufferSize * sizeof(int16_t));
 		memset(pBufOrien, -1, bufferSize * sizeof(int32_t));
-		memset(pBufOut, 0, bufferSize * sizeof(uint8_t));
 		memset(pBufMag, 0, bufferSize * sizeof(float));
 
 		int index = 0;
-		float MaxGradient = -9999.99f;
 		for(int i = 1; i < width-1; ++i) {
 			for(int j = 1; j < height-1; ++j){ 	
 				index = j * width + i;
@@ -563,12 +561,11 @@ void CShapeMatchV2::train_shape_model(
 					direction = -1;
 
 				pBufOrien[index] = (int32_t)direction;
-				if (MagG > MaxGradient) MaxGradient = MagG;
 			}
 		}
 
-		const float factor = 255.0 / MaxGradient;
-		float leftPixel = 0., rightPixel = 0.;
+		float leftPixel = 0.;
+		float rightPixel = 0.;
 		for(int i = 1; i < width - 1; ++i) {
 			for(int j = 1; j < height - 1; ++j) {
 				index = j * width + i;
@@ -597,11 +594,9 @@ void CShapeMatchV2::train_shape_model(
 					break;
 				}
 
-				float bufMag = *(pBufMag + index);
-				if ((bufMag < leftPixel) || (bufMag < rightPixel))
-					*(pBufOut + index) = 0;
-				else
-					*(pBufOut + index) = (unsigned char)(bufMag*factor);
+				if ((*(pBufMag + index) < leftPixel) || 
+					(*(pBufMag + index) < rightPixel))
+					*(pBufMag + index) = 0;
 			}
 		}
 
@@ -614,21 +609,21 @@ void CShapeMatchV2::train_shape_model(
 				float MagG = *(pBufMag + index);
 
 				flagReserve = 1;
-				if((float)*(pBufOut + index) < Contrast) {
-					if((float)*(pBufOut + index) < MinContrast) {
-						*(pBufOut + index) = 0;
+				if(*(pBufMag + index) < Contrast) {
+					if(*(pBufMag + index) < MinContrast) {
+						*(pBufMag + index) = 0;
 						flagReserve = 0;
 					}
 					else {
-						if (((float)*(pBufOut + index - width - 1) < Contrast) &&
-							((float)*(pBufOut + index - width) < Contrast) &&
-							((float)*(pBufOut + index - width + 1) < Contrast) &&
-							((float)*(pBufOut + index - 1) < Contrast) &&
-							((float)*(pBufOut + index + 1) < Contrast) &&
-							((float)*(pBufOut + index + width - 1) < Contrast) &&
-							((float)*(pBufOut + index + width) < Contrast) &&
-							((float)*(pBufOut + index + width + 1) < Contrast)) {
-							*(pBufOut + index) = 0;
+						if (((float)*(pBufMag + index - width - 1) < Contrast) &&
+							((float)*(pBufMag + index - width) < Contrast) &&
+							((float)*(pBufMag + index - width + 1) < Contrast) &&
+							((float)*(pBufMag + index - 1) < Contrast) &&
+							((float)*(pBufMag + index + 1) < Contrast) &&
+							((float)*(pBufMag + index + width - 1) < Contrast) &&
+							((float)*(pBufMag + index + width) < Contrast) &&
+							((float)*(pBufMag + index + width + 1) < Contrast)) {
+							*(pBufMag + index) = 0;
 							flagReserve = 0;
 						}
 					}
@@ -648,7 +643,6 @@ void CShapeMatchV2::train_shape_model(
 	if(pBufOrien) std::free(pBufOrien);
 	if(pBufGradY) std::free(pBufGradY);
 	if(pBufGradX) std::free(pBufGradX);
-	if(pBufOut) std::free(pBufOut);
 	if(pInput) std::free(pInput);
 }
 
@@ -676,9 +670,6 @@ bool CShapeMatchV2::create_shape_model_impl(
 
 	unsigned char* pMaskDataPyr = (unsigned char*)malloc(BufferSize * sizeof(unsigned char));
 	memcpy(pMaskDataPyr, pMaskDataPyrAll + (in_size/denominator)*numerator, BufferSize * sizeof(unsigned char));
-
-	cv::Mat cvImageDataPyr = cv::Mat(HeightPyr, WidthPyr, CV_8UC1, pImageDataPyr);
-	cv::Mat cvMaskDataPyr = cv::Mat(HeightPyr, WidthPyr, CV_8UC1, pMaskDataPyr);
 
 	bool IsBuild = build_model_list(
 		ModelID.m_pShapeInfoPyr[PyrLevel],
@@ -712,10 +703,9 @@ bool CShapeMatchV2::create_shape_model(
 
 		cv::Mat ImgMask = cv::Mat(Length, Length, CV_8UC1);
 		memset(ImgMask.data, 0, ImgMask.rows * ImgMask.cols * sizeof(unsigned char));
-		
-		int ImgMaskWStep = ImgMask.cols;
+	
 		for (uint32_t row = yOffset; row < yOffset + Template.rows; row++)
-			memset(ImgMask.data + row * ImgMaskWStep + xOffset, 0xff, Template.cols * sizeof(unsigned char));
+			memset(ImgMask.data + row * ImgMask.cols + xOffset, 0xff, Template.cols * sizeof(unsigned char));
 
 		int BorderedWidth  = ImgBordered.cols;
 		int BorderedHeight = ImgBordered.rows;
@@ -785,83 +775,61 @@ void CShapeMatchV2::shape_match(
 	int width  = Width;
 	int height = Height;
 	uint32_t  bufferSize  = Width * Height;
+	float minScore = MinScore * std::powf(SCORE_RATIO, ShapeInfoVec->PyLevel);
 
 	unsigned char* pInput = (unsigned char*)malloc(bufferSize * sizeof(unsigned char));
-	int16_t* pBufGradX = (int16_t*)malloc(bufferSize * sizeof(int16_t));
-	int16_t* pBufGradY = (int16_t*)malloc(bufferSize * sizeof(int16_t));
-	float* pBufMag = (float*)malloc(bufferSize * sizeof(float));
-	/*int16_t* pBufOrien = (int16_t*)malloc(bufferSize * sizeof(int16_t));*/
+	cv::Point2f* pBufDir = (cv::Point2f*)malloc(bufferSize * sizeof(cv::Point2f));
 
 	resultsPerDeg.clear();
 	totalResultsTemp.clear();
 	resultsPerDeg.resize(MAXTARGETNUM);
 	totalResultsTemp.resize(MAXTARGETNUM);
 
-	if( pInput && pBufGradX && pBufGradY && pBufMag ){
+	if(pInput){
 		//gaussian_filter(SearchImage, pInput, width, height);
 		memcpy(pInput, SearchImage, bufferSize * sizeof(uint8_t));
-		memset(pBufGradX, 0, bufferSize * sizeof(int16_t));
-		memset(pBufGradY, 0, bufferSize * sizeof(int16_t));
-		memset(pBufMag, 0, bufferSize * sizeof(float));
-		/*memset(pBufOrien, -1, bufferSize * sizeof(int16_t));*/
+		memset(pBufDir, 0, bufferSize * sizeof(cv::Point2f));
 
 		int index = 0;
-		float MaxGrad = -9999.0;
-
 		for(int i = 1; i < width-1; ++i) {
 			for(int j = 1; j < height-1; ++j) {
 				index = j * width + i;
 				int16_t sdx = *(pInput + index + 1) - *(pInput + index - 1);
 				int16_t sdy = *(pInput + index + width) - *(pInput + index - width);
-				*(pBufGradX + index) = sdx;
-				*(pBufGradY + index) = sdy;
-				*(pBufMag + index) = new_rsqrt((float)(sdx*sdx) + (float)(sdy*sdy));
+				float smag = sqrtf((float)(sdx*sdx) + (float)(sdy*sdy));
 
-				/*float direction = cv::fastAtan2(float(sdy), float(sdx));
-
-				if ((direction > 0 && direction < 22.5) || (direction > 157.5 && direction < 202.5) || (direction > 337.5 && direction < 360))
-					direction = 0;
-				else if ((direction > 22.5 && direction < 67.5) || (direction > 202.5 && direction < 247.5))
-					direction = 45;
-				else if ((direction > 67.5 && direction < 112.5) || (direction > 247.5 && direction < 292.5))
-					direction = 90;
-				else if ((direction > 112.5 && direction < 157.5) || (direction > 292.5 && direction < 337.5))
-					direction = 135;
-				else
-					direction = -1;
-
-				pBufOrien[index] = (int16_t)direction;*/
+				if (smag != 0) smag = 1.0 / smag;
+				*(pBufDir + index) = cv::Point2f(sdx*smag, sdy*smag);
 			}
 		}
 
 		int curX = 0;
 		int curY = 0;
 
-		int16_t dir = 0;
-		int16_t iTx = 0;
-		int16_t iTy = 0;
-		int16_t iSx = 0;
-		int16_t iSy = 0;
-		float   iSm = 0;
-		float   iTm = 0;
+		float iTx = 0;
+		float iTy = 0;
+		float iSx = 0;
+		float iSy = 0;
+		float iSm = 0;
+		float iTm = 0;
 
 		int startX =  SearchRegion->StartX;
 		int startY =  SearchRegion->StartY;
 		int endX   =  SearchRegion->EndX;
 		int endY   =  SearchRegion->EndY;
 
-		int AngleStop	= SearchRegion->AngleStop;
+		int AngleStep	= SearchRegion->AngleStep;
 		int AngleStart	= SearchRegion->AngleStart;
+		int AngleStop	= SearchRegion->AngleStop;
+		int iAngle		= ShapeInfoVec->Angle;
 
-		int	  PixelError   = 2;
-		int	  AngleMatchNum = 0;
 		int   SumOfCoords  = 0;
 		int   TempPiontX   = 0;
 		int   TempPiontY   = 0;
 		float PartialSum   = 0;
 		float PartialScore = 0;
 		float ResultScore  = 0;
-		float anMinScore = MinScore - 1.0;
+		float anMinScore = 1 - minScore;
 		float NormMinScore   = 0;
 		float NormGreediness = Greediness;
 
@@ -874,33 +842,27 @@ void CShapeMatchV2::shape_match(
 
 			resultsNumPerDegree = 0;
 			ResultScore = 0;
-			NormMinScore = MinScore / ShapeInfoVec[k].NoOfCordinates;
-			NormGreediness = ((1 - Greediness * MinScore) / (1 - Greediness)) / ShapeInfoVec[k].NoOfCordinates;
+			NormMinScore = minScore / ShapeInfoVec[k].NoOfCordinates;
+			NormGreediness = ((1 - Greediness * minScore) / (1 - Greediness)) / ShapeInfoVec[k].NoOfCordinates;
 
 			for(int i = startX; i < endX; ++i) {
 				for(int j = startY; j < endY; ++j) {
 					PartialSum = 0;
-					AngleMatchNum = 0;
+
 					for(int num = 0; num < ShapeInfoVec[k].NoOfCordinates; ++num) {
 						curX = i + ShapeInfoVec[k].Coordinates[num].x;
 						curY = j + ShapeInfoVec[k].Coordinates[num].y;
-						iTx = ShapeInfoVec[k].EdgeDerivativeX[num];
-						iTy = ShapeInfoVec[k].EdgeDerivativeY[num];
-						iTm = ShapeInfoVec[k].EdgeMagnitude[num];
-						dir = ShapeInfoVec[k].EdgeDirection[num];
+						iTx = ShapeInfoVec[k].EdgeDirection[num].x;
+						iTy = ShapeInfoVec[k].EdgeDirection[num].y;
 
 						if (curX < 0 || curY < 0 || curX > width - 1 || curY > height - 1) continue;
 
 						int offSet = curY * width + curX;
-						iSx = *(pBufGradX + offSet);
-						iSy = *(pBufGradY + offSet);
-						iSm = *(pBufMag + offSet);
-
-						/*if (dir != *(pBufOrien + offSet)) AngleMatchNum++;
-						if (AngleMatchNum > int(ShapeInfoVec[k].NoOfCordinates*0.1)) break;*/
+						iSx = (*(pBufDir + offSet)).x;
+						iSy = (*(pBufDir + offSet)).y;
 
 						if((iSx != 0 || iSy != 0) && (iTx != 0 || iTy != 0)) {
-							PartialSum = PartialSum + ((iSx * iTx) + (iSy * iTy)) * (iTm * iSm);
+							PartialSum = PartialSum + ((iSx * iTx) + (iSy * iTy));
 						}
 						
 						SumOfCoords = num + 1;
@@ -909,14 +871,14 @@ void CShapeMatchV2::shape_match(
 							break;
 					}
 
-					if (PartialScore > MinScore) {
+					if (PartialScore > minScore) {
 						bool hasFlag = false;
 						int Angle = ShapeInfoVec[k].Angle;
 						auto resultPerDegTmp = resultsPerDeg.GetElement();
 						auto resultPerDegSize = resultsPerDeg.size();
 						for(int n = 1; n <= resultPerDegSize; ++n) {
-							if(std::abs((resultPerDegTmp)[n].CenterLocX - i) < PixelError &&
-								std::abs((resultPerDegTmp)[n].CenterLocY - j) < PixelError) {
+							if(std::abs((resultPerDegTmp)[n].CenterLocX - i) < 3 &&
+								std::abs((resultPerDegTmp)[n].CenterLocY - j) < 3) {
 								hasFlag = true;
 								if((resultPerDegTmp)[n].ResultScore < PartialScore) {
 									(resultPerDegTmp)[n].Angle = Angle;
@@ -959,8 +921,8 @@ void CShapeMatchV2::shape_match(
 		for(int i = 1; i <= totalResultsTemp.size(); i++) {
 			hasFlag = false;
 			for(int j = 0; j < resultsCounter; j++) {	
-				if(std::abs((ResultList + j)->CenterLocX - (totalResults)[i].CenterLocX) < PixelError &&
-					std::abs((ResultList + j)->CenterLocY - (totalResults)[i].CenterLocY) < PixelError) {
+				if(std::abs((ResultList + j)->CenterLocX - (totalResults)[i].CenterLocX) < 3 &&
+					std::abs((ResultList + j)->CenterLocY - (totalResults)[i].CenterLocY) < 3) {
 					hasFlag = true;
 					if((totalResults)[i].ResultScore > (ResultList + j)->ResultScore) {
 						(ResultList + j)->Angle			= (totalResults)[i].Angle;
@@ -982,9 +944,6 @@ void CShapeMatchV2::shape_match(
 		*NumMatches = resultsCounter;
 	}
 
-	if(pBufMag) std::free(pBufMag);
-	if(pBufGradY) std::free(pBufGradY);
-	if(pBufGradX) std::free(pBufGradX);
 	if(pInput) std::free(pInput);
 }
 
@@ -1003,68 +962,49 @@ void CShapeMatchV2::shape_match_accurate(
 	int width  = Width;
 	int height = Height;
 	uint32_t  bufferSize  = Width * Height;
+	float minScore = MinScore * std::powf(SCORE_RATIO, ShapeInfoVec->PyLevel);
 
 	unsigned char* pInput = (unsigned char*)malloc(bufferSize * sizeof(unsigned char));
-	int16_t* pBufGradX   = (int16_t *) malloc(bufferSize * sizeof(int16_t));
-	int16_t* pBufGradY   = (int16_t *) malloc(bufferSize * sizeof(int16_t));
-	float* pBufMag     = (float *) malloc(bufferSize * sizeof(float));
-	/*int16_t* pBufOrien = (int16_t*)malloc(bufferSize * sizeof(int16_t));*/
+	cv::Point2f* pBufDir = (cv::Point2f*)malloc(bufferSize * sizeof(cv::Point2f));
 
-	if( pInput && pBufGradX && pBufGradY && pBufMag ) {
+	if(pInput) {
 		//gaussian_filter(SearchImage, pInput, width, height);
 		memcpy(pInput, SearchImage, bufferSize * sizeof(unsigned char));
-		memset(pBufGradX, 0, bufferSize * sizeof(int16_t));
-		memset(pBufGradY, 0, bufferSize * sizeof(int16_t));
-		memset(pBufMag, 0, bufferSize * sizeof(float));
-		/*memset(pBufOrien, -1, bufferSize * sizeof(int16_t));*/
+		memset(pBufDir, 0, bufferSize * sizeof(cv::Point2f));
 
+		int index = 0;
 		for(int i = 1; i < width-1; ++i) {
 			for(int j = 1; j < height-1; ++j) {
-				const int index = j * width + i;
+				index = j * width + i;
 				int16_t sdx = *(pInput + index + 1) - *(pInput + index - 1);
 				int16_t sdy = *(pInput + index + width) - *(pInput + index - width);
-				*(pBufGradX + index) = sdx;
-				*(pBufGradY + index) = sdy; 
-				*(pBufMag   + index) = new_rsqrt((float)(sdx*sdx) + (float)(sdy*sdy));
+				float smag = sqrtf((float)(sdx*sdx) + (float)(sdy*sdy));
 
-				/*float direction = cv::fastAtan2(float(sdy), float(sdx));
-
-				if ((direction > 0 && direction < 22.5) || (direction > 157.5 && direction < 202.5) || (direction > 337.5 && direction < 360))
-					direction = 0;
-				else if ((direction > 22.5 && direction < 67.5) || (direction > 202.5 && direction < 247.5))
-					direction = 45;
-				else if ((direction > 67.5 && direction < 112.5) || (direction > 247.5 && direction < 292.5))
-					direction = 90;
-				else if ((direction > 112.5 && direction < 157.5) || (direction > 292.5 && direction < 337.5))
-					direction = 135;
-				else
-					direction = -1;
-
-				pBufOrien[index] = (int16_t)direction;*/
+				if (smag != 0) smag = 1.0 / smag;
+				*(pBufDir + index) = cv::Point2f(sdx*smag, sdy*smag);
 			}
 		}
 
 		int curX = 0;
 		int curY = 0;
 
-		int16_t dir = 0;
-		int16_t iTx = 0;
-		int16_t iTy = 0;
-		int16_t iSx = 0;
-		int16_t iSy = 0;
-		float   iSm = 0;
-		float   iTm = 0;
+		float iTx = 0;
+		float iTy = 0;
+		float iSx = 0;
+		float iSy = 0;
+		float iSm = 0;
+		float iTm = 0;
 
 		int startX =  SearchRegion->StartX;
 		int startY =  SearchRegion->StartY;
 		int endX   =  SearchRegion->EndX;
 		int endY   =  SearchRegion->EndY;
 
+		int AngleStep	= SearchRegion->AngleStep;
 		int AngleStart	= SearchRegion->AngleStart;
 		int AngleStop	= SearchRegion->AngleStop;
+		int iAngle		= ShapeInfoVec->Angle;
 
-		int	  PixelError    = 2;
-		int	  AngleMatchNum = 0;
 		int	  ImageIndex	= 0;
 		int   SumOfCoords	= 0;
 		int   TempPointX	= 0;
@@ -1073,7 +1013,7 @@ void CShapeMatchV2::shape_match_accurate(
 		float PartialScore	= 0;
 		float ResultScore	= 0;
 		float TempScore		= 0;
-		float anMinScore = MinScore - 1.0;
+		float anMinScore = 1 - minScore;
 		float NormMinScore	= 0;
 		float NormGreediness= Greediness;
 
@@ -1081,31 +1021,25 @@ void CShapeMatchV2::shape_match_accurate(
 			if (ShapeInfoVec[k].Angle < AngleStart || ShapeInfoVec[k].Angle > AngleStop) continue;
 
 			ResultScore = 0;
-			NormMinScore = MinScore / ShapeInfoVec[k].NoOfCordinates;
-			NormGreediness = ((1- Greediness * MinScore)/(1-Greediness)) /ShapeInfoVec[k].NoOfCordinates;
+			NormMinScore = minScore / ShapeInfoVec[k].NoOfCordinates;
+			NormGreediness = ((1- Greediness * minScore)/(1-Greediness)) /ShapeInfoVec[k].NoOfCordinates;
 			for(int i = startX; i < endX; ++i) {
 				for(int j = startY; j < endY; ++j) {
 					PartialSum = 0;
-					AngleMatchNum = 0;
 					for(int m = 0; m < ShapeInfoVec[k].NoOfCordinates; ++m) {
 						curX = i + ShapeInfoVec[k].Coordinates[m].x ;
 						curY = j + ShapeInfoVec[k].Coordinates[m].y ;
-						iTx	 = ShapeInfoVec[k].EdgeDerivativeX[m];
-						iTy	 = ShapeInfoVec[k].EdgeDerivativeY[m];
-						iTm  = ShapeInfoVec[k].EdgeMagnitude[m];
+						iTx = ShapeInfoVec[k].EdgeDirection[m].x;
+						iTy = ShapeInfoVec[k].EdgeDirection[m].y;
 
 						if(curX < 0 ||curY < 0||curX > width-1 ||curY > height-1) continue;
 
 						ImageIndex = curY * width + curX;
-						iSx = *(pBufGradX + ImageIndex);
-						iSy = *(pBufGradY + ImageIndex);
-						iSm = *(pBufMag   + ImageIndex);
-
-						/*if (dir != *(pBufOrien + ImageIndex)) AngleMatchNum++;
-						if (AngleMatchNum > int(ShapeInfoVec[k].NoOfCordinates*0.1)) break;*/
+						iSx = (*(pBufDir + ImageIndex)).x;
+						iSy = (*(pBufDir + ImageIndex)).y;
 
 						if((iSx != 0 || iSy != 0) && (iTx != 0 || iTy != 0)) {
-							PartialSum = PartialSum + ((iSx * iTx) + (iSy * iTy)) * (iTm * iSm);
+							PartialSum = PartialSum + ((iSx * iTx) + (iSy * iTy));
 						}
 
 						SumOfCoords = m + 1;
@@ -1132,9 +1066,6 @@ void CShapeMatchV2::shape_match_accurate(
 		}
 	}
 
-	if(pBufMag) std::free(pBufMag);
-	if(pBufGradY) std::free(pBufGradY);
-	if(pBufGradX) std::free(pBufGradX);
 	if(pInput) std::free(pInput);
 }
 
@@ -1153,6 +1084,7 @@ void CShapeMatchV2::find_shape_model_impl(
 	MatchResultV2* ResultList
 )
 {
+	int Offset = 8;
 	int WidthPy = 0;
 	int HeightPy = 0;
 	float ScoreMax = 0;
@@ -1167,8 +1099,6 @@ void CShapeMatchV2::find_shape_model_impl(
 	int MinContrast = ModelID.m_MinContrast;
 	int in_size = BorderedWidth * BorderedHeight;
 	int Row1, Col1, Row2, Col2, ResultPointX, ResultPointY, ReferPointX, ReferPointY;
-	int Offset = std::max(std::abs(ModelID.m_AngleStart), std::abs(ModelID.m_AngleStop));
-	Offset = 0;
 
 	SearchRegionV2* SearchRegion = (SearchRegionV2*)malloc(sizeof(SearchRegionV2));
 	std::memset(SearchRegion, 0, sizeof(SearchRegionV2));
@@ -1180,18 +1110,24 @@ void CShapeMatchV2::find_shape_model_impl(
 	int denominator = std::powf(4, PyrLevel - 1);
 
 	unsigned char* pImagePyr = nullptr;
-	pImagePyr = (unsigned char*)malloc((in_size/factor) * sizeof(unsigned char));
+	pImagePyr = (unsigned char*)malloc((in_size / factor) * sizeof(unsigned char));
 
 	if (PyrLevel == 0) {
 		WidthPy = BorderedWidth;
 		HeightPy = BorderedHeight;
-		std::memcpy(pImagePyr, BorderedImgData, sizeof(unsigned char)*(in_size/factor));
+		std::memcpy(pImagePyr, BorderedImgData, (in_size / factor) * sizeof(unsigned char));
 	}
 	else {
 		WidthPy = BorderedWidth >> PyrLevel;
 		HeightPy = BorderedHeight >> PyrLevel;
-		std::memcpy(pImagePyr, pImagePyrAll + (in_size/denominator)*numerator, sizeof(unsigned char)*(in_size/factor));
+		std::memcpy(pImagePyr, pImagePyrAll + (in_size / denominator)*numerator, (in_size / factor) * sizeof(unsigned char));
 	}
+	
+#ifdef SAVE_IMG
+	std::string filename = "E://Xiongxinxin//ShapeMatchV2//result//pyr_" + 
+		std::to_string(PyrLevel) + ".bmp";
+	download_pyr_img(filename, WidthPy, HeightPy, pImagePyr);
+#endif
 	
 	SearchRegion->StartX = (ModelID.m_pShapeInfoPyr[PyrLevel][0].ReferPoint.x >> 1) + (xOffset >> PyrLevel);
 	SearchRegion->StartY = (ModelID.m_pShapeInfoPyr[PyrLevel][0].ReferPoint.y >> 1) + (yOffset >> PyrLevel);
@@ -1204,8 +1140,6 @@ void CShapeMatchV2::find_shape_model_impl(
 
 	MatchResultV2 ResultListPyr[MAXTARGETNUM];
 	std::memset(ResultListPyr, 0, MAXTARGETNUM * sizeof(MatchResultV2));
-
-	cv::Mat cvImagePyr = cv::Mat(HeightPy, WidthPy, CV_8UC1, pImagePyr);
 
 	if (ModelID.m_pShapeInfoPyr[PyrLevel] != NULL) {
 		int TargetNum = 0;
@@ -1257,7 +1191,6 @@ void CShapeMatchV2::find_shape_model_impl(
 		ScoreMax = ResultListPyr[i].ResultScore;
 
 		if (ScoreMax == 0) break;
-		if (ScoreMax <= MinScore) continue;
 
 		MatchResultV2 ResultPyr;
 		for (int level = PyrLevel - 1; level >= 0; --level) {
@@ -1275,8 +1208,14 @@ void CShapeMatchV2::find_shape_model_impl(
 			else {
 				WidthPy = BorderedWidth >> level;
 				HeightPy = BorderedHeight >> level;
-				std::memcpy(pImagePyr, pImagePyrAll + (in_size/denominator)*numerator, sizeof(unsigned char)*(in_size/factor));
+				std::memcpy(pImagePyr, pImagePyrAll + (in_size / denominator)*numerator, (in_size / factor) * sizeof(unsigned char));
 			}
+
+#ifdef SAVE_IMG
+			filename = "E://Xiongxinxin//ShapeMatchV2//result//pyr_" +
+				std::to_string(level) + ".bmp";
+			download_pyr_img(filename, WidthPy, HeightPy, pImagePyr);
+#endif
 
 			ResultPointX = ((MatchPointX << 1) < 0) ? 0 : (MatchPointX << 1);
 			ResultPointY = ((MatchPointY << 1) < 0) ? 0 : (MatchPointY << 1);
@@ -1310,10 +1249,8 @@ void CShapeMatchV2::find_shape_model_impl(
 			SearchRegion->EndY = ((SearchRegion->StartY + 4 + 2 * posOffset) > cropImgH) ? cropImgH : (SearchRegion->StartY + 4 + 2 * posOffset);
 
 			SearchRegion->AngleRange = ModelID.m_pShapeInfoPyr[level][0].AngleNum;
-			//SearchRegion->AngleStart = ((MatchAngle - Offset) < ModelID.m_AngleStart) ? ModelID.m_AngleStart : (MatchAngle - Offset);
-			//SearchRegion->AngleStop = ((MatchAngle + Offset) > ModelID.m_AngleStop) ? ModelID.m_AngleStop : (MatchAngle + Offset);
-			SearchRegion->AngleStart = ModelID.m_AngleStart;
-			SearchRegion->AngleStop = ModelID.m_AngleStop;
+			SearchRegion->AngleStart = ((MatchAngle - Offset) < ModelID.m_AngleStart) ? ModelID.m_AngleStart : (MatchAngle - Offset);
+			SearchRegion->AngleStop = ((MatchAngle + Offset) > ModelID.m_AngleStop) ? ModelID.m_AngleStop : (MatchAngle + Offset);
 			SearchRegion->AngleStep = ModelID.m_AngleStep << level;
 
 			if (ModelID.m_pShapeInfoPyr[level] != NULL) {
@@ -1341,7 +1278,7 @@ void CShapeMatchV2::find_shape_model_impl(
 			MatchPointY = ResultPyr.CenterLocY + Col1;
 			MatchAngle = ResultPyr.Angle;
 			ScoreMax = ResultPyr.ResultScore;
-			if (ScoreMax < MinScore) break;
+			if (ScoreMax < (MinScore*std::powf(SCORE_RATIO, level))) break;
 		}
 
 		if (ResultPyr.ResultScore > MinScore) {
@@ -1564,127 +1501,4 @@ int ShapeMatchTool::factorial(int num, int level)
 		sum += std::powf(num, it);
 	}
 	return sum;
-}
-
-/* 
- Various border types, image boundaries are denoted with '|' 
-  
- * BORDER_REPLICATE:     aaaaaa|abcdefgh|hhhhhhh 
- * BORDER_REFLECT:       fedcba|abcdefgh|hgfedcb 
- * BORDER_REFLECT_101:   gfedcb|abcdefgh|gfedcba 
- * BORDER_WRAP:          cdefgh|abcdefgh|abcdefg         
- * BORDER_CONSTANT:      iiiiii|abcdefgh|iiiiiii  with some specified 'i' 
- */  
-int cv::borderInterpolate( int p, int len, int borderType ) // p是扩展边界的位置，len是原图宽度  
-{  
-    if( (unsigned)p < (unsigned)len )     // 转换为无符号类型，左边界和上边界：p一般是负数，右边界和下边界，p一般是大于len的。  
-        ;  
-    else if( borderType == BORDER_REPLICATE ) // 重复类型，每次对应原图的位置是0或len-1  
-        p = p < 0 ? 0 : len - 1;  
-    else if( borderType == BORDER_REFLECT || borderType == BORDER_REFLECT_101 ) // 反射/映射  
-    {  
-        int delta = borderType == BORDER_REFLECT_101;  
-        if( len == 1 )  
-            return 0;  
-        do  
-        {  
-            if( p < 0 )    // 反射：左边界或101：右边界  
-                p = -p - 1 + delta;  
-            else  
-                p = len - 1 - (p - len) - delta;  
-        }  
-        while( (unsigned)p >= (unsigned)len );  
-    }  
-    else if( borderType == BORDER_WRAP )  // 包装  
-    {  
-        if( p < 0 )  // 左边界  
-            p -= ((p-len+1)/len)*len;  
-        if( p >= len )  // 右边界  
-            p %= len;  
-    }  
-    else if( borderType == BORDER_CONSTANT )  // 常量，另外处理  
-        p = -1;  
-    else  
-        //CV_Error( CV_StsBadArg, "Unknown/unsupported border type" );  
-    return p;  
-}
-
-static void copyMakeBorder_8u( const uchar* src, size_t srcstep, cv::Size srcroi, // 原图 参数：数据，step，大小
-							  uchar* dst, size_t dststep, cv::Size dstroi,  // 目的图像参数
-							  int top, int left, int cn, int borderType )
-{
-	const int isz = (int)sizeof(int);
-	int i, j, k, elemSize = 1;
-	bool intMode = false;
-
-	if( (cn | srcstep | dststep | (size_t)src | (size_t)dst) % isz == 0 )
-	{
-		cn /= isz;
-		elemSize = isz;
-		intMode = true;
-	}
-
-	cv::AutoBuffer<int> _tab((dstroi.width - srcroi.width)*cn);  // 大小是扩展的左右边界之和，仅用于存放扩展的边界在原图中的位置
-	int* tab = _tab;
-	int right = dstroi.width - srcroi.width - left;
-	int bottom = dstroi.height - srcroi.height - top;
-
-	for( i = 0; i < left; i++ ) // 左边界
-	{
-		j = cv::borderInterpolate(i - left, srcroi.width, borderType)*cn;  // 计算出原图中对应的位置
-		for( k = 0; k < cn; k++ )  // 每个通道的处理
-			tab[i*cn + k] = j + k;
-	}
-
-	for( i = 0; i < right; i++ )  // 右边界
-	{
-		j = cv::borderInterpolate(srcroi.width + i, srcroi.width, borderType)*cn;
-		for( k = 0; k < cn; k++ )
-			tab[(i+left)*cn + k] = j + k;
-	}
-
-	srcroi.width *= cn;
-	dstroi.width *= cn;
-	left *= cn;
-	right *= cn;
-
-	uchar* dstInner = dst + dststep*top + left*elemSize;
-
-	for( i = 0; i < srcroi.height; i++, dstInner += dststep, src += srcstep ) // 从原图中复制数据到扩展的边界中
-	{
-		if( dstInner != src )
-			memcpy(dstInner, src, srcroi.width*elemSize);
-
-		if( intMode )
-		{
-			const int* isrc = (int*)src;
-			int* idstInner = (int*)dstInner;
-			for( j = 0; j < left; j++ )
-				idstInner[j - left] = isrc[tab[j]];
-			for( j = 0; j < right; j++ )
-				idstInner[j + srcroi.width] = isrc[tab[j + left]];
-		}
-		else
-		{
-			for( j = 0; j < left; j++ )
-				dstInner[j - left] = src[tab[j]];
-			for( j = 0; j < right; j++ )
-				dstInner[j + srcroi.width] = src[tab[j + left]];
-		}
-	}
-
-	dstroi.width *= elemSize;
-	dst += dststep*top;
-
-	for( i = 0; i < top; i++ )  // 上边界
-	{
-		j = cv::borderInterpolate(i - top, srcroi.height, borderType);
-		memcpy(dst + (i - top)*dststep, dst + j*dststep, dstroi.width); // 进行整行的复制
-	}
-
-	for( i = 0; i < bottom; i++ ) // 先边界
-	{
-		j = cv::borderInterpolate(i + srcroi.height, srcroi.height, borderType);
-		memcpy(dst + (i + srcroi.height)*dststep, dst + j*dststep, dstroi.width); // 进行整行的复制
-	}
 }
